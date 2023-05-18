@@ -6,6 +6,7 @@ import actionlib
 from smach import State,StateMachine
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray ,PointStamped
+from nav_msgs.msg import Path
 from std_msgs.msg import Empty
 from tf import TransformListener
 import tf
@@ -102,6 +103,8 @@ class GetPath(State):
         State.__init__(self, outcomes=['success'], input_keys=['waypoints'], output_keys=['waypoints'])
         # Subscribe to pose message to get new waypoints
         self.addpose_topic = rospy.get_param('~addpose_topic','/initialpose')
+        # Subscribe to path message to get new waypoints
+        self.addpath_topic = rospy.get_param('~addpath_topic','/path_to_waypoints')
         # Create publsher to publish waypoints as pose array so that you can see them in rviz, etc.
         self.posearray_topic = rospy.get_param('~posearray_topic','/waypoints')
         self.poseArray_publisher = rospy.Publisher(self.posearray_topic, PoseArray, queue_size=1)
@@ -173,8 +176,9 @@ class GetPath(State):
         start_journey_thread = threading.Thread(target=wait_for_start_journey)
         start_journey_thread.start()
 
-        topic = self.addpose_topic;
+        topic = self.addpose_topic
         rospy.loginfo("Waiting to recieve waypoints via Pose msg on topic %s" % topic)
+        rospy.loginfo("Waiting to recieve waypoints via Path msg on topic %s" % self.addpath_topic)
         rospy.loginfo("To start following waypoints: 'rostopic pub /path_ready std_msgs/Empty -1'")
         rospy.loginfo("OR")
         rospy.loginfo("To start following saved waypoints: 'rostopic pub /start_journey std_msgs/Empty -1'")
@@ -185,14 +189,37 @@ class GetPath(State):
             try:
                 pose = rospy.wait_for_message(topic, PoseWithCovarianceStamped, timeout=1)
             except rospy.ROSException as e:
-                if 'timeout exceeded' in e.message:
-                    continue  # no new waypoint within timeout, looping...
-                else:
-                    raise e
-            rospy.loginfo("Recieved new waypoint")
-            waypoints.append(changePose(pose, "map"))
-            # publish waypoint queue as pose array so that you can see them in rviz, etc.
-            self.poseArray_publisher.publish(convert_PoseWithCovArray_to_PoseArray(waypoints))
+                pose = None
+                #if 'timeout exceeded' in e.message:
+                #    continue  # no new waypoint within timeout, looping...
+                #else:
+                #    raise 
+            if pose == None:
+                try:
+                    path = rospy.wait_for_message(self.addpath_topic, Path, timeout=2)
+                except rospy.ROSException as e:
+                    if 'timeout exceeded' in str(e):
+                        continue  # no new waypoint within timeout, looping...
+                    else:
+                        rospy.loginfo(str(e))
+                        raise
+                
+                if path != None:
+                    rospy.loginfo("Recieved new path")
+                    for poseStamped in path.poses:
+                        poseCov = PoseWithCovarianceStamped()
+                        poseCov.header.frame_id = poseStamped.header.frame_id
+                        poseCov.pose.pose = poseStamped.pose
+                        
+                        rospy.loginfo("Recieved new waypoint (from path)")
+                        waypoints.append(changePose(poseCov, "map"))
+                    # publish waypoint queue as pose array so that you can see them in rviz, etc.
+                    self.poseArray_publisher.publish(convert_PoseWithCovArray_to_PoseArray(waypoints))
+            else:
+                rospy.loginfo("Recieved new waypoint")
+                waypoints.append(changePose(pose, "map"))
+                # publish waypoint queue as pose array so that you can see them in rviz, etc.
+                self.poseArray_publisher.publish(convert_PoseWithCovArray_to_PoseArray(waypoints))
 
         # Path is ready! return success and move on to the next state (FOLLOW_PATH)
         return 'success'
